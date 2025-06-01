@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    io::Write,
-    iter::Peekable,
-    str::Chars,
-};
+use std::{collections::LinkedList, io::Write, iter::Peekable, str::Chars};
 
 #[derive(Debug, PartialEq)]
 enum Token {
@@ -14,39 +9,39 @@ enum Token {
     BSlash,
 }
 
+#[derive(Debug)]
+enum Ast {
+    Ident(String),
+    Lambda(String, Box<Ast>),
+    App(Box<Ast>, Box<Ast>),
+}
+
 #[derive(Debug, Clone)]
 enum Expr {
-    Ident(String),
+    Var(usize),
+    Free(String),
     Lambda(String, Box<Expr>),
     App(Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
-    fn pretty(&self, level: u32) -> String {
+    fn pretty(&self, top_level: bool) -> String {
         match self {
-            Self::Ident(id) => id.clone(),
-            Self::Lambda(param, body) => {
-                let mut retr = format!("\\{} -> {}", param, body.pretty(level + 1));
-                if level != 0 {
-                    retr.insert(0, '(');
-                    retr.push(')');
-                }
-                retr
+            Self::Var(n) => return n.to_string(),
+            Self::Free(name) => return name.clone(),
+            Self::App(fun, arg) if top_level => {
+                format!("{} {}", fun.pretty(false), arg.pretty(false))
             }
-            Self::App(fun, arg) => {
-                let mut retr = format!("{} {}", fun.pretty(level + 1), arg.pretty(level + 1));
-                if level != 0 {
-                    retr.insert(0, '(');
-                    retr.push(')');
-                }
-                retr
-            }
+            Self::App(fun, arg) => format!("({} {})", fun.pretty(false), arg.pretty(false)),
+            Self::Lambda(param, body) if top_level => format!("\\{} {}", param, body.pretty(false)),
+            Self::Lambda(param, body) => format!("(\\{} {})", param, body.pretty(false)),
         }
     }
 }
 
 type LexerInputStream<'a> = Peekable<Chars<'a>>;
 type TokenStream<'a> = Peekable<std::slice::Iter<'a, Token>>;
+type EnvList = LinkedList<String>;
 
 fn lex<'a>(input: &mut LexerInputStream) -> Vec<Token> {
     let mut retr = vec![];
@@ -71,7 +66,8 @@ fn lex<'a>(input: &mut LexerInputStream) -> Vec<Token> {
 fn lex_ident<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
     let mut retr = so_far.to_string();
 
-    while let Some(peeked) = input.next_if(|&p| p.is_ascii_alphanumeric() && !"([])".contains(p)) {
+    while let Some(peeked) = input.next_if(|&p| p.is_ascii_alphanumeric() && !"([\\])".contains(p))
+    {
         retr.push(peeked);
     }
 
@@ -82,7 +78,7 @@ fn lex_op<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
     let mut retr = so_far.to_string();
 
     while let Some(peeked) = input
-        .next_if(|&p| p.is_ascii_graphic() && !p.is_ascii_alphanumeric() && !"([_])".contains(p))
+        .next_if(|&p| p.is_ascii_graphic() && !p.is_ascii_alphanumeric() && !"([_\\])".contains(p))
     {
         retr.push(peeked);
     }
@@ -90,43 +86,46 @@ fn lex_op<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
     Token::Op(retr)
 }
 
-fn parse_expr(tokens: &mut TokenStream) -> Box<Expr> {
-    parse_lambda_expr(tokens)
+fn parse_ast(tokens: &mut TokenStream) -> Ast {
+    parse_lambda_ast(tokens)
 }
 
-fn parse_lambda_expr(tokens: &mut TokenStream) -> Box<Expr> {
-    if let Some(Token::BSlash) = tokens.next_if(|&t| *t == Token::BSlash) {
-        let param = match tokens.next() {
-            Some(Token::Ident(name)) => name,
-            _ => panic!("Expected parameter name after `\\`"),
-        };
+fn parse_lambda_ast(tokens: &mut TokenStream) -> Ast {
+    if let Some(_) = tokens.next_if(|&t| *t == Token::BSlash) {
+        let param = tokens
+            .next()
+            .map(|tok| match tok {
+                Token::Ident(id) => id,
+                _ => panic!("Unexpected token encountered while trying to parse lambda parameter"),
+            })
+            .expect("Expected parameter in lambda expression");
 
         match tokens.next() {
             Some(Token::Op(op)) if op == "->" => {
-                Box::new(Expr::Lambda(param.clone(), parse_lambda_expr(tokens)))
+                Ast::Lambda(param.clone(), Box::new(parse_lambda_ast(tokens)))
             }
             _ => panic!("Expected `->`"),
         }
     } else {
-        parse_app_expr(tokens)
+        parse_app_ast(tokens)
     }
 }
 
-fn parse_app_expr(tokens: &mut TokenStream) -> Box<Expr> {
-    let mut expr = parse_atom(tokens);
+fn parse_app_ast(tokens: &mut TokenStream) -> Ast {
+    let mut ast = parse_atom(tokens);
 
     while let Some(Token::Ident(_)) | Some(Token::LParen) = tokens.peek() {
-        expr = Box::new(Expr::App(expr, parse_atom(tokens)))
+        ast = Ast::App(Box::new(ast), Box::new(parse_atom(tokens)))
     }
 
-    expr
+    ast
 }
 
-fn parse_atom(tokens: &mut TokenStream) -> Box<Expr> {
+fn parse_atom(tokens: &mut TokenStream) -> Ast {
     match tokens.next() {
-        Some(Token::Ident(id)) => Box::new(Expr::Ident(id.clone())),
+        Some(Token::Ident(id)) => Ast::Ident(id.clone()),
         Some(Token::LParen) => {
-            let retr = parse_expr(tokens);
+            let retr = parse_ast(tokens);
             match tokens.next() {
                 Some(Token::RParen) => retr,
                 _ => panic!("Expected `)`"),
@@ -138,83 +137,100 @@ fn parse_atom(tokens: &mut TokenStream) -> Box<Expr> {
     }
 }
 
-fn eval(mut expr: Box<Expr>) -> Box<Expr> {
-    let mut taken = HashMap::new();
-    while let Some(expr2) = beta_reduce(expr.clone(), &mut taken) {
-        expr = expr2;
-        println!("{}", expr.pretty(0));
+fn ast_to_expr(ast: &Ast, env: &mut EnvList) -> Expr {
+    match ast {
+        Ast::Ident(id) => env
+            .iter()
+            .rev()
+            .position(|param| param == id)
+            .map_or_else(|| Expr::Free(id.clone()), |dist| Expr::Var(dist)),
+        Ast::App(fun, arg) => Expr::App(
+            Box::new(ast_to_expr(fun, env)),
+            Box::new(ast_to_expr(arg, env)),
+        ),
+        Ast::Lambda(param, body) => {
+            env.push_back(param.clone());
+            let retr = Expr::Lambda(param.clone(), Box::new(ast_to_expr(body, env)));
+            env.pop_back();
+            retr
+        }
     }
-    expr
 }
 
-fn beta_reduce(expr: Box<Expr>, taken: &mut HashMap<String, u32>) -> Option<Box<Expr>> {
-    match *expr {
+fn eval(expr: &Expr) -> Vec<Expr> {
+    let mut tmp = expr.clone();
+    let mut retr = vec![tmp.clone()];
+
+    while let Some(expr2) = beta_reduce(&tmp) {
+        tmp = expr2;
+        retr.push(tmp.clone());
+    }
+
+    retr
+}
+
+fn is_value(expr: &Expr) -> bool {
+    matches!(expr, Expr::Lambda(_, _) | Expr::Var(_) | Expr::Free(_))
+}
+
+fn beta_reduce(expr: &Expr) -> Option<Expr> {
+    match expr {
+        Expr::App(fun, arg) if !is_value(fun) => {
+            beta_reduce(fun).map(|fun2| Expr::App(Box::new(fun2), arg.clone()))
+        }
+        Expr::App(fun, arg) if !is_value(arg) => {
+            beta_reduce(arg).map(|arg2| Expr::App(fun.clone(), Box::new(arg2)))
+        }
         Expr::App(fun, arg) => {
-            if let Expr::Lambda(param, body) = *fun {
-                let fv_arg = free_vars_of(&arg);
-
-                if fv_arg.contains(&param) {
-                    let fresh_param = fresh(&param, taken);
-                    let renamed =
-                        substitute(body, &param, &Box::new(Expr::Ident(fresh_param.clone())));
-
-                    Some(substitute(renamed, &fresh_param, &arg))
-                } else {
-                    Some(substitute(body, &param, &arg))
-                }
+            if let Expr::Lambda(_, body) = fun.as_ref() {
+                Some(substitute_top(body, arg))
             } else {
                 None
             }
+        }
+        Expr::Lambda(param, body) => {
+            beta_reduce(body).map(|body2| Expr::Lambda(param.clone(), Box::new(body2)))
         }
         _ => None,
     }
 }
 
-fn free_vars(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        Expr::Ident(name) => {
-            out.insert(name.clone());
-        }
-        Expr::Lambda(param, body) => {
-            free_vars(body, out);
-            out.remove(param);
-        }
-        Expr::App(fun, arg) => {
-            free_vars(&fun, out);
-            free_vars(&arg, out);
+fn shift(expr: &Expr, amount: isize) -> Expr {
+    fn walk(expr: &Expr, amount: isize, cut: usize) -> Expr {
+        match expr {
+            Expr::Var(n) if *n >= cut => Expr::Var((*n as isize + amount) as usize),
+            Expr::Var(_) | Expr::Free(_) => expr.clone(),
+            Expr::App(fun, arg) => Expr::App(
+                Box::new(walk(fun, amount, cut)),
+                Box::new(walk(arg, amount, cut)),
+            ),
+            Expr::Lambda(param, body) => {
+                Expr::Lambda(param.clone(), Box::new(walk(body, amount, cut + 1)))
+            }
         }
     }
+    walk(expr, amount, 0)
 }
 
-fn free_vars_of(e: &Expr) -> HashSet<String> {
-    let mut set = HashSet::new();
-    free_vars(e, &mut set);
-    set
-}
-
-fn fresh(orig: &str, taken: &mut HashMap<String, u32>) -> String {
-    let n = taken.entry(orig.to_string()).or_insert(0);
-    let retr = format!("{}{}", orig, n);
-    *n += 1;
-    retr
-}
-
-fn substitute(term: Box<Expr>, var: &str, replacement: &Box<Expr>) -> Box<Expr> {
-    match *term {
-        Expr::Ident(name) if name == var => replacement.clone(),
-        Expr::Ident(_) => term.clone(),
-        Expr::Lambda(param, body) if param == var => {
-            // shadowed
-            Box::new(Expr::Lambda(param.clone(), body.clone()))
+fn substitute(expr: &Expr, replacement: &Expr, idx: usize) -> Expr {
+    fn walk(expr: &Expr, replacement: &Expr, idx: usize, c: usize) -> Expr {
+        match expr {
+            Expr::Var(n) if *n == idx + c => shift(replacement, c as isize),
+            Expr::Var(_) | Expr::Free(_) => expr.clone(),
+            Expr::App(fun, arg) => Expr::App(
+                Box::new(walk(fun, replacement, idx, c)),
+                Box::new(walk(arg, replacement, idx, c)),
+            ),
+            Expr::Lambda(param, body) => {
+                Expr::Lambda(param.clone(), Box::new(walk(body, replacement, idx, c + 1)))
+            }
         }
-        Expr::Lambda(param, body) => {
-            Box::new(Expr::Lambda(param, substitute(body, var, replacement)))
-        }
-        Expr::App(fun, arg) => Box::new(Expr::App(
-            substitute(fun, var, replacement),
-            substitute(arg, var, replacement),
-        )),
     }
+    walk(expr, replacement, idx, 0)
+}
+
+fn substitute_top(expr: &Expr, replacement: &Expr) -> Expr {
+    shift(&substitute(expr, &shift(replacement, 1), 0), -1)
 }
 
 fn main() {
@@ -229,9 +245,15 @@ fn main() {
         // println!("{:?}", tokens);
 
         let mut token_stream = tokens.iter().peekable();
-        let expr = parse_expr(&mut token_stream);
-        // println!("{}", expr.pretty(0));
+        let ast = parse_ast(&mut token_stream);
+        // println!("AST: {:?}", ast);
 
-        eval(expr);
+        let mut env = EnvList::new();
+        let expr = ast_to_expr(&ast, &mut env);
+        let steps = eval(&expr);
+
+        for step in steps {
+            println!("<=> {}", step.pretty(true));
+        }
     }
 }
