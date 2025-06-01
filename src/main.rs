@@ -90,22 +90,43 @@ fn parse_ast(tokens: &mut TokenStream) -> Ast {
     parse_lambda_ast(tokens)
 }
 
+fn parse_params(tokens: &mut TokenStream) -> Vec<String> {
+    let mut retr = Vec::new();
+
+    loop {
+        match tokens.peek() {
+            Some(Token::Ident(id)) => {
+                if retr.contains(id) {
+                    panic!("Conflicting definitions for `{}`", id)
+                }
+                retr.push(id.clone());
+            }
+            _ => break,
+        }
+        tokens.next();
+    }
+
+    retr
+}
+
 fn parse_lambda_ast(tokens: &mut TokenStream) -> Ast {
     if let Some(_) = tokens.next_if(|&t| *t == Token::BSlash) {
-        let param = tokens
-            .next()
-            .map(|tok| match tok {
-                Token::Ident(id) => id,
-                _ => panic!("Unexpected token encountered while trying to parse lambda parameter"),
-            })
-            .expect("Expected parameter in lambda expression");
+        let params = parse_params(tokens);
+
+        if params.len() == 0 {
+            panic!("Expected at least one parameter in lambda expression");
+        }
 
         match tokens.next() {
-            Some(Token::Op(op)) if op == "->" => {
-                Ast::Lambda(param.clone(), Box::new(parse_lambda_ast(tokens)))
-            }
+            Some(Token::Op(op)) if op == "->" => {}
             _ => panic!("Expected `->`"),
         }
+
+        let body = parse_lambda_ast(tokens);
+
+        params
+            .into_iter()
+            .rfold(body, |acc, p| Ast::Lambda(p, Box::new(acc)))
     } else {
         parse_app_ast(tokens)
     }
