@@ -20,7 +20,7 @@ enum Ast {
 enum Expr {
     Var(usize),
     Free(String),
-    Lambda(String, Box<Expr>),
+    Lambda(Box<Expr>),
     App(Box<Expr>, Box<Expr>),
 }
 
@@ -33,8 +33,8 @@ impl Expr {
                 format!("{} {}", fun.pretty(false), arg.pretty(false))
             }
             Self::App(fun, arg) => format!("({} {})", fun.pretty(false), arg.pretty(false)),
-            Self::Lambda(param, body) if top_level => format!("\\{} {}", param, body.pretty(false)),
-            Self::Lambda(param, body) => format!("(\\{} {})", param, body.pretty(false)),
+            Self::Lambda(body) if top_level => format!("\\ {}", body.pretty(false)),
+            Self::Lambda(body) => format!("(\\ {})", body.pretty(false)),
         }
     }
 }
@@ -171,7 +171,7 @@ fn ast_to_expr(ast: &Ast, env: &mut EnvList) -> Expr {
         ),
         Ast::Lambda(param, body) => {
             env.push_back(param.clone());
-            let retr = Expr::Lambda(param.clone(), Box::new(ast_to_expr(body, env)));
+            let retr = Expr::Lambda(Box::new(ast_to_expr(body, env)));
             env.pop_back();
             retr
         }
@@ -191,7 +191,7 @@ fn eval(expr: &Expr) -> Vec<Expr> {
 }
 
 fn is_value(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lambda(_, _) | Expr::Var(_) | Expr::Free(_))
+    matches!(expr, Expr::Lambda(_) | Expr::Var(_) | Expr::Free(_))
 }
 
 fn beta_reduce(expr: &Expr) -> Option<Expr> {
@@ -203,15 +203,13 @@ fn beta_reduce(expr: &Expr) -> Option<Expr> {
             beta_reduce(arg).map(|arg2| Expr::App(fun.clone(), Box::new(arg2)))
         }
         Expr::App(fun, arg) => {
-            if let Expr::Lambda(_, body) = fun.as_ref() {
+            if let Expr::Lambda(body) = fun.as_ref() {
                 Some(substitute_top(body, arg))
             } else {
                 None
             }
         }
-        Expr::Lambda(param, body) => {
-            beta_reduce(body).map(|body2| Expr::Lambda(param.clone(), Box::new(body2)))
-        }
+        Expr::Lambda(body) => beta_reduce(body).map(|body2| Expr::Lambda(Box::new(body2))),
         _ => None,
     }
 }
@@ -225,9 +223,7 @@ fn shift(expr: &Expr, amount: isize) -> Expr {
                 Box::new(walk(fun, amount, cut)),
                 Box::new(walk(arg, amount, cut)),
             ),
-            Expr::Lambda(param, body) => {
-                Expr::Lambda(param.clone(), Box::new(walk(body, amount, cut + 1)))
-            }
+            Expr::Lambda(body) => Expr::Lambda(Box::new(walk(body, amount, cut + 1))),
         }
     }
     walk(expr, amount, 0)
@@ -242,9 +238,7 @@ fn substitute(expr: &Expr, replacement: &Expr, idx: usize) -> Expr {
                 Box::new(walk(fun, replacement, idx, c)),
                 Box::new(walk(arg, replacement, idx, c)),
             ),
-            Expr::Lambda(param, body) => {
-                Expr::Lambda(param.clone(), Box::new(walk(body, replacement, idx, c + 1)))
-            }
+            Expr::Lambda(body) => Expr::Lambda(Box::new(walk(body, replacement, idx, c + 1))),
         }
     }
     walk(expr, replacement, idx, 0)
@@ -263,11 +257,9 @@ fn main() {
 
         let mut stream = input.chars().peekable();
         let tokens = lex(&mut stream);
-        // println!("{:?}", tokens);
 
         let mut token_stream = tokens.iter().peekable();
         let ast = parse_ast(&mut token_stream);
-        // println!("AST: {:?}", ast);
 
         let mut env = EnvList::new();
         let expr = ast_to_expr(&ast, &mut env);
