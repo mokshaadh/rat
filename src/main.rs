@@ -27,8 +27,8 @@ enum Expr {
 impl Expr {
     fn pretty(&self, top_level: bool) -> String {
         match self {
-            Self::Var(n) => return n.to_string(),
-            Self::Free(name) => return name.clone(),
+            Self::Var(n) => n.to_string(),
+            Self::Free(name) => format!("<{}>", name.clone()),
             Self::App(fun, arg) if top_level => {
                 format!("{} {}", fun.pretty(false), arg.pretty(false))
             }
