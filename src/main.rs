@@ -41,9 +41,9 @@ impl Expr {
 
 type LexerInputStream<'a> = Peekable<Chars<'a>>;
 type TokenStream<'a> = Peekable<std::slice::Iter<'a, Token>>;
-type EnvList = LinkedList<String>;
+type ParseResult<T> = Result<T, String>;
 
-fn lex<'a>(input: &mut LexerInputStream) -> Vec<Token> {
+fn lex<'a>(input: &mut LexerInputStream) -> ParseResult<Vec<Token>> {
     let mut retr = vec![];
 
     while let Some(next) = input.next() {
@@ -56,11 +56,11 @@ fn lex<'a>(input: &mut LexerInputStream) -> Vec<Token> {
             ']' => todo!(),
             c if c.is_ascii_alphanumeric() || c == '_' => retr.push(lex_ident(input, c)),
             c if c.is_ascii_graphic() => retr.push(lex_op(input, c)),
-            _ => todo!(),
+            otherwise => return Err(format!("Unexpected character `{}`", otherwise)),
         }
     }
 
-    retr
+    Ok(retr)
 }
 
 fn lex_ident<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
@@ -86,18 +86,18 @@ fn lex_op<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
     Token::Op(retr)
 }
 
-fn parse_ast(tokens: &mut TokenStream) -> Ast {
+fn parse_ast(tokens: &mut TokenStream) -> ParseResult<Ast> {
     parse_lambda_ast(tokens)
 }
 
-fn parse_params(tokens: &mut TokenStream) -> Vec<String> {
+fn parse_params(tokens: &mut TokenStream) -> ParseResult<Vec<String>> {
     let mut retr = Vec::new();
 
     loop {
         match tokens.peek() {
             Some(Token::Ident(id)) => {
                 if retr.contains(id) {
-                    panic!("Conflicting definitions for `{}`", id)
+                    return Err(format!("Conflicting definitions for `{}`", id));
                 }
                 retr.push(id.clone());
             }
@@ -106,59 +106,62 @@ fn parse_params(tokens: &mut TokenStream) -> Vec<String> {
         tokens.next();
     }
 
-    retr
+    Ok(retr)
 }
 
-fn parse_lambda_ast(tokens: &mut TokenStream) -> Ast {
+fn parse_lambda_ast(tokens: &mut TokenStream) -> ParseResult<Ast> {
     if let Some(_) = tokens.next_if(|&t| *t == Token::BSlash) {
-        let params = parse_params(tokens);
+        let params = parse_params(tokens)?;
 
         if params.len() == 0 {
-            panic!("Expected at least one parameter in lambda expression");
+            return Err(format!(
+                "Expected at least one parameter in lambda expression"
+            ));
         }
 
-        match tokens.next() {
-            Some(Token::Op(op)) if op == "->" => {}
-            _ => panic!("Expected `->`"),
-        }
-
-        let body = parse_lambda_ast(tokens);
-
-        params
-            .into_iter()
-            .rfold(body, |acc, p| Ast::Lambda(p, Box::new(acc)))
+        tokens
+            .next_if(|&t| matches!(t, Token::Op(op) if op == "->"))
+            .map_or_else(
+                || Err(format!("Expected `->` in lambda expression")),
+                |_| {
+                    Ok(params
+                        .into_iter()
+                        .rfold(parse_lambda_ast(tokens)?, |acc, p| {
+                            Ast::Lambda(p, Box::new(acc))
+                        }))
+                },
+            )
     } else {
         parse_app_ast(tokens)
     }
 }
 
-fn parse_app_ast(tokens: &mut TokenStream) -> Ast {
-    let mut ast = parse_atom(tokens);
+fn parse_app_ast(tokens: &mut TokenStream) -> ParseResult<Ast> {
+    let mut ast = parse_atom(tokens)?;
 
     while let Some(Token::Ident(_)) | Some(Token::LParen) = tokens.peek() {
-        ast = Ast::App(Box::new(ast), Box::new(parse_atom(tokens)))
+        ast = Ast::App(Box::new(ast), Box::new(parse_atom(tokens)?))
     }
 
-    ast
+    Ok(ast)
 }
 
-fn parse_atom(tokens: &mut TokenStream) -> Ast {
+fn parse_atom(tokens: &mut TokenStream) -> ParseResult<Ast> {
     match tokens.next() {
-        Some(Token::Ident(id)) => Ast::Ident(id.clone()),
+        Some(Token::Ident(id)) => Ok(Ast::Ident(id.clone())),
         Some(Token::LParen) => {
             let retr = parse_ast(tokens);
-            match tokens.next() {
-                Some(Token::RParen) => retr,
-                _ => panic!("Expected `)`"),
-            }
+            tokens
+                .next_if(|&t| matches!(t, Token::RParen))
+                .map_or_else(|| Err(format!("Expected `)`")), |_| retr)
         }
-        Some(Token::RParen) => panic!("Unmatched `)`"),
-        None => panic!("Unexpected EOF"),
-        other => panic!("Unexpected token: {:?}", other),
+        Some(Token::RParen) => Err(format!("Unmatched `)`")),
+        None => Err(format!("Unexpected EOF")),
+        otherwise => Err(format!("Unexpected token `{:?}`", otherwise)),
     }
 }
 
-fn ast_to_expr(ast: &Ast, env: &mut EnvList) -> Expr {
+fn ast_to_expr(ast: &Ast, env: &mut LinkedList<String>) -> Expr {
     match ast {
         Ast::Ident(id) => env
             .iter()
@@ -256,12 +259,24 @@ fn main() {
         std::io::stdin().read_line(&mut input).unwrap();
 
         let mut stream = input.chars().peekable();
-        let tokens = lex(&mut stream);
+        let tokens = match lex(&mut stream) {
+            Ok(tokens) => tokens,
+            Err(msg) => {
+                println!("Parse Error: {}", msg);
+                continue;
+            }
+        };
 
         let mut token_stream = tokens.iter().peekable();
-        let ast = parse_ast(&mut token_stream);
+        let ast = match parse_ast(&mut token_stream) {
+            Ok(ast) => ast,
+            Err(msg) => {
+                println!("Parse Error: {}", msg);
+                continue;
+            }
+        };
 
-        let mut env = EnvList::new();
+        let mut env = LinkedList::new();
         let expr = ast_to_expr(&ast, &mut env);
         let steps = eval(&expr);
 
