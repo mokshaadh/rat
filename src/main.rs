@@ -25,16 +25,23 @@ enum Expr {
 }
 
 impl Expr {
-    fn pretty(&self, top_level: bool) -> String {
+    fn pretty(&self, parens: bool) -> String {
         match self {
-            Self::Var(n) => n.to_string(),
+            Self::Var(n) => format!("${}", n),
             Self::Free(name) => format!("<{}>", name.clone()),
-            Self::App(fun, arg) if top_level => {
-                format!("{} {}", fun.pretty(false), arg.pretty(false))
+            Self::App(fun, arg) => {
+                let lhs = match **fun {
+                    Expr::Lambda(_) => fun.pretty(true),
+                    _ => fun.pretty(false),
+                };
+                let rhs = match **arg {
+                    Expr::Lambda(_) => arg.pretty(true),
+                    _ => arg.pretty(false),
+                };
+                format!("{} {}", lhs, rhs)
             }
-            Self::App(fun, arg) => format!("({} {})", fun.pretty(false), arg.pretty(false)),
-            Self::Lambda(body) if top_level => format!("\\ {}", body.pretty(false)),
-            Self::Lambda(body) => format!("(\\ {})", body.pretty(false)),
+            Self::Lambda(body) if parens => format!("(\\ {})", body.pretty(false)),
+            Self::Lambda(body) => format!("\\ {}", body.pretty(false)),
         }
     }
 }
@@ -281,7 +288,7 @@ fn main() {
         let steps = eval(&expr);
 
         for step in steps {
-            println!("<=> {}", step.pretty(true));
+            println!("<=> {}", step.pretty(false));
         }
     }
 }
