@@ -1,4 +1,10 @@
-use std::{collections::LinkedList, io::Write, iter::Peekable, str::Chars};
+use std::{
+    collections::{LinkedList, VecDeque},
+    io::Write,
+    iter::Peekable,
+    rc::Rc,
+    str::Chars,
+};
 
 #[derive(Debug, PartialEq)]
 enum Token {
@@ -16,32 +22,36 @@ enum Ast {
     App(Box<Ast>, Box<Ast>),
 }
 
+type Env = Rc<EnvList>;
+type EnvList = VecDeque<Expr>;
+
 #[derive(Debug, Clone)]
 enum Expr {
     Var(usize),
     Free(String),
-    Lambda(Box<Expr>),
+    Lambda(Box<Expr>, Env),
     App(Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
-    fn pretty(&self, parens: bool) -> String {
+    fn pretty(&self) -> String {
         match self {
             Self::Var(n) => format!("${}", n),
             Self::Free(name) => format!("<{}>", name.clone()),
-            Self::App(fun, arg) => {
-                let lhs = match **fun {
-                    Expr::Lambda(_) => fun.pretty(true),
-                    _ => fun.pretty(false),
-                };
-                let rhs = match **arg {
-                    Expr::Lambda(_) => arg.pretty(true),
-                    _ => arg.pretty(false),
-                };
-                format!("{} {}", lhs, rhs)
+            Self::App(fun, arg) => format!("{} {}", fun.pretty(), arg.pretty()),
+            Self::Lambda(body, env) if env.is_empty() => format!("(\\ {})", body.pretty()),
+            Self::Lambda(body, env) => {
+                let mut retr = format!("(\\ {} | [", body.pretty());
+
+                for (i, expr) in env.iter().enumerate() {
+                    retr = format!("{}{}", retr, expr.pretty());
+                    if i < env.len() - 1 {
+                        retr += ", "
+                    }
+                }
+
+                retr + "])"
             }
-            Self::Lambda(body) if parens => format!("(\\ {})", body.pretty(false)),
-            Self::Lambda(body) => format!("\\ {}", body.pretty(false)),
         }
     }
 }
@@ -168,94 +178,46 @@ fn parse_atom(tokens: &mut TokenStream) -> ParseResult<Ast> {
     }
 }
 
-fn ast_to_expr(ast: &Ast, env: &mut LinkedList<String>) -> Expr {
+fn ast_to_expr(ast: &Ast, ctx: &mut LinkedList<String>) -> Expr {
     match ast {
-        Ast::Ident(id) => env
+        Ast::Ident(id) => ctx
             .iter()
             .rev()
             .position(|param| param == id)
             .map_or_else(|| Expr::Free(id.clone()), |dist| Expr::Var(dist)),
         Ast::App(fun, arg) => Expr::App(
-            Box::new(ast_to_expr(fun, env)),
-            Box::new(ast_to_expr(arg, env)),
+            Box::new(ast_to_expr(fun, ctx)),
+            Box::new(ast_to_expr(arg, ctx)),
         ),
         Ast::Lambda(param, body) => {
-            env.push_back(param.clone());
-            let retr = Expr::Lambda(Box::new(ast_to_expr(body, env)));
-            env.pop_back();
+            ctx.push_back(param.clone());
+            let retr = Expr::Lambda(Box::new(ast_to_expr(body, ctx)), Env::new(EnvList::new()));
+            ctx.pop_back();
             retr
         }
     }
 }
 
-fn eval(expr: &Expr) -> Vec<Expr> {
-    let mut tmp = expr.clone();
-    let mut retr = vec![tmp.clone()];
-
-    while let Some(expr2) = beta_reduce(&tmp) {
-        tmp = expr2;
-        retr.push(tmp.clone());
-    }
-
-    retr
-}
-
-fn is_value(expr: &Expr) -> bool {
-    matches!(expr, Expr::Lambda(_) | Expr::Var(_) | Expr::Free(_))
-}
-
-fn beta_reduce(expr: &Expr) -> Option<Expr> {
+fn beta_reduce(expr: &Expr, env: &Env) -> Expr {
     match expr {
-        Expr::App(fun, arg) if !is_value(fun) => {
-            beta_reduce(fun).map(|fun2| Expr::App(Box::new(fun2), arg.clone()))
-        }
-        Expr::App(fun, arg) if !is_value(arg) => {
-            beta_reduce(arg).map(|arg2| Expr::App(fun.clone(), Box::new(arg2)))
-        }
+        Expr::Var(n) => env[*n].clone(),
         Expr::App(fun, arg) => {
-            if let Expr::Lambda(body) = fun.as_ref() {
-                Some(substitute_top(body, arg))
+            let new_fun = beta_reduce(fun, env);
+            let new_arg = beta_reduce(arg, env);
+
+            if let Expr::Lambda(body, fun_env) = new_fun {
+                let mut new_env_list = (*fun_env).clone();
+                new_env_list.push_front(new_arg);
+                let new_env = Env::new(new_env_list);
+
+                beta_reduce(&body, &new_env)
             } else {
-                None
+                Expr::App(Box::new(new_fun), Box::new(new_arg))
             }
         }
-        Expr::Lambda(body) => beta_reduce(body).map(|body2| Expr::Lambda(Box::new(body2))),
-        _ => None,
+        Expr::Lambda(body, _) => Expr::Lambda(body.clone(), env.clone()),
+        _ => expr.clone(),
     }
-}
-
-fn shift(expr: &Expr, amount: isize) -> Expr {
-    fn walk(expr: &Expr, amount: isize, cut: usize) -> Expr {
-        match expr {
-            Expr::Var(n) if *n >= cut => Expr::Var((*n as isize + amount) as usize),
-            Expr::Var(_) | Expr::Free(_) => expr.clone(),
-            Expr::App(fun, arg) => Expr::App(
-                Box::new(walk(fun, amount, cut)),
-                Box::new(walk(arg, amount, cut)),
-            ),
-            Expr::Lambda(body) => Expr::Lambda(Box::new(walk(body, amount, cut + 1))),
-        }
-    }
-    walk(expr, amount, 0)
-}
-
-fn substitute(expr: &Expr, replacement: &Expr, idx: usize) -> Expr {
-    fn walk(expr: &Expr, replacement: &Expr, idx: usize, c: usize) -> Expr {
-        match expr {
-            Expr::Var(n) if *n == idx + c => shift(replacement, c as isize),
-            Expr::Var(_) | Expr::Free(_) => expr.clone(),
-            Expr::App(fun, arg) => Expr::App(
-                Box::new(walk(fun, replacement, idx, c)),
-                Box::new(walk(arg, replacement, idx, c)),
-            ),
-            Expr::Lambda(body) => Expr::Lambda(Box::new(walk(body, replacement, idx, c + 1))),
-        }
-    }
-    walk(expr, replacement, idx, 0)
-}
-
-fn substitute_top(expr: &Expr, replacement: &Expr) -> Expr {
-    shift(&substitute(expr, &shift(replacement, 1), 0), -1)
 }
 
 fn main() {
@@ -283,12 +245,10 @@ fn main() {
             }
         };
 
-        let mut env = LinkedList::new();
-        let expr = ast_to_expr(&ast, &mut env);
-        let steps = eval(&expr);
+        let mut ctx = LinkedList::new();
+        let expr = ast_to_expr(&ast, &mut ctx);
+        let expr = beta_reduce(&expr, &Env::new(EnvList::new()));
 
-        for step in steps {
-            println!("<=> {}", step.pretty(false));
-        }
+        println!("{}", expr.pretty());
     }
 }
