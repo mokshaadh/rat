@@ -1,5 +1,5 @@
 use std::{
-    collections::{LinkedList, VecDeque},
+    collections::{HashMap, LinkedList, VecDeque},
     io::Write,
     iter::Peekable,
     rc::Rc,
@@ -38,7 +38,7 @@ impl Expr {
         match self {
             Self::Var(n) => format!("${}", n),
             Self::Free(name) => format!("<{}>", name.clone()),
-            Self::App(fun, arg) => format!("{} {}", fun.pretty(), arg.pretty()),
+            Self::App(fun, arg) => format!("({} {})", fun.pretty(), arg.pretty()),
             Self::Lambda(body, env) if env.is_empty() => format!("(\\ {})", body.pretty()),
             Self::Lambda(body, env) => {
                 let mut retr = format!("(\\ {} | [", body.pretty());
@@ -59,6 +59,7 @@ impl Expr {
 type LexerInputStream<'a> = Peekable<Chars<'a>>;
 type TokenStream<'a> = Peekable<std::slice::Iter<'a, Token>>;
 type ParseResult<T> = Result<T, String>;
+type Symbs = HashMap<String, Expr>;
 
 fn lex<'a>(input: &mut LexerInputStream) -> ParseResult<Vec<Token>> {
     let mut retr = vec![];
@@ -198,24 +199,25 @@ fn ast_to_expr(ast: &Ast, ctx: &mut LinkedList<String>) -> Expr {
     }
 }
 
-fn beta_reduce(expr: &Expr, env: &Env) -> Expr {
+fn beta_reduce(expr: &Expr, env: &Env, symbs: &Symbs) -> Expr {
     match expr {
         Expr::Var(n) => env[*n].clone(),
+        Expr::Free(name) => symbs.get(name).unwrap_or(expr).clone(),
         Expr::App(fun, arg) => {
-            let new_fun = beta_reduce(fun, env);
-            let new_arg = beta_reduce(arg, env);
+            let new_fun = beta_reduce(fun, env, symbs);
+            let new_arg = beta_reduce(arg, env, symbs);
 
             if let Expr::Lambda(body, fun_env) = new_fun {
                 let mut new_env_list = (*fun_env).clone();
-                new_env_list.push_front(new_arg);
+                new_env_list.push_front(new_arg.clone());
                 let new_env = Env::new(new_env_list);
 
-                beta_reduce(&body, &new_env)
+                beta_reduce(&body, &new_env, symbs)
             } else {
                 Expr::App(Box::new(new_fun), Box::new(new_arg))
             }
         }
-        Expr::Lambda(body, _) => Expr::Lambda(body.clone(), env.clone()),
+        Expr::Lambda(body, _) if !env.is_empty() => Expr::Lambda(body.clone(), env.clone()),
         _ => expr.clone(),
     }
 }
@@ -247,8 +249,23 @@ fn main() {
 
         let mut ctx = LinkedList::new();
         let expr = ast_to_expr(&ast, &mut ctx);
-        let expr = beta_reduce(&expr, &Env::new(EnvList::new()));
 
+        let mut symbs = Symbs::new();
+        for i in 0..11 {
+            let mut base = Box::new(Expr::Var(0));
+            for _ in 0..i {
+                base = Box::new(Expr::App(Box::new(Expr::Var(1)), base));
+            }
+            symbs.insert(
+                i.to_string(),
+                Expr::Lambda(
+                    Box::new(Expr::Lambda(base, Env::new(EnvList::new()))),
+                    Env::new(EnvList::new()),
+                ),
+            );
+        }
+
+        let expr = beta_reduce(&expr, &Env::new(EnvList::new()), &symbs);
         println!("{}", expr.pretty());
     }
 }
