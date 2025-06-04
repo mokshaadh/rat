@@ -84,7 +84,8 @@ fn lex<'a>(input: &mut LexerInputStream) -> ParseResult<Vec<Token>> {
 fn lex_ident<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
     let mut retr = so_far.to_string();
 
-    while let Some(peeked) = input.next_if(|&p| p.is_ascii_alphanumeric() && !"([\\])".contains(p))
+    while let Some(peeked) =
+        input.next_if(|&p| (p.is_ascii_alphanumeric() || p == '_') && !"([\\])".contains(p))
     {
         retr.push(peeked);
     }
@@ -222,48 +223,68 @@ fn beta_reduce(expr: &Expr, env: &Env, symbs: &Symbs) -> Expr {
     }
 }
 
+fn str_to_expr(input: &str) -> Result<Expr, String> {
+    let mut char_stream = input.chars().peekable();
+    let tokens = lex(&mut char_stream)?;
+    let mut token_stream = tokens.iter().peekable();
+    let ast = parse_ast(&mut token_stream)?;
+
+    let mut ctx = LinkedList::new();
+    Ok(ast_to_expr(&ast, &mut ctx))
+}
+
+fn add_predefined_symb(symbs: &mut Symbs, s: &str, e: &str) {
+    symbs.insert(s.to_string(), str_to_expr(e).unwrap());
+}
+
 fn main() {
+    let mut symbs = Symbs::new();
+
+    // Church Booleans
+    add_predefined_symb(&mut symbs, "True", "\\t -> \\f -> t");
+    add_predefined_symb(&mut symbs, "False", "\\t -> \\f -> f");
+
+    add_predefined_symb(&mut symbs, "if_then_else", "\\b -> \\x -> \\y -> b x y");
+    add_predefined_symb(&mut symbs, "and", "\\b -> \\c -> b c False");
+    add_predefined_symb(&mut symbs, "or", "\\b -> \\c -> b True c");
+    add_predefined_symb(&mut symbs, "not", "\\x -> x False True");
+
+    // Church Numerals
+    for i in 0..11 {
+        let mut base = Box::new(Expr::Var(0));
+        for _ in 0..i {
+            base = Box::new(Expr::App(Box::new(Expr::Var(1)), base));
+        }
+        symbs.insert(
+            i.to_string(),
+            Expr::Lambda(
+                Box::new(Expr::Lambda(base, Env::new(EnvList::new()))),
+                Env::new(EnvList::new()),
+            ),
+        );
+    }
+
+    // add_predefined_symb(&mut symbs, "succ", "\\n -> \\f -> \\x -> f (n f x)");
+    add_predefined_symb(&mut symbs, "succ", "\\n -> \\f -> \\x -> n f (f x)");
+
+    // Pairs
+    add_predefined_symb(&mut symbs, "pair", "\\f -> \\s -> \\b -> b f s");
+    add_predefined_symb(&mut symbs, "fst", "\\p -> p True");
+    add_predefined_symb(&mut symbs, "snd", "\\p -> p False");
+
     loop {
         let mut input = String::new();
         print!("~=:> ");
         std::io::stdout().flush().unwrap();
         std::io::stdin().read_line(&mut input).unwrap();
 
-        let mut stream = input.chars().peekable();
-        let tokens = match lex(&mut stream) {
-            Ok(tokens) => tokens,
+        let expr = match str_to_expr(&input) {
+            Ok(expr) => expr,
             Err(msg) => {
-                println!("Parse Error: {}", msg);
+                println!("Error: {}", msg);
                 continue;
             }
         };
-
-        let mut token_stream = tokens.iter().peekable();
-        let ast = match parse_ast(&mut token_stream) {
-            Ok(ast) => ast,
-            Err(msg) => {
-                println!("Parse Error: {}", msg);
-                continue;
-            }
-        };
-
-        let mut ctx = LinkedList::new();
-        let expr = ast_to_expr(&ast, &mut ctx);
-
-        let mut symbs = Symbs::new();
-        for i in 0..11 {
-            let mut base = Box::new(Expr::Var(0));
-            for _ in 0..i {
-                base = Box::new(Expr::App(Box::new(Expr::Var(1)), base));
-            }
-            symbs.insert(
-                i.to_string(),
-                Expr::Lambda(
-                    Box::new(Expr::Lambda(base, Env::new(EnvList::new()))),
-                    Env::new(EnvList::new()),
-                ),
-            );
-        }
 
         let expr = beta_reduce(&expr, &Env::new(EnvList::new()), &symbs);
         println!("{}", expr.pretty());
