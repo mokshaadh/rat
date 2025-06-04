@@ -1,26 +1,16 @@
 use std::{
     collections::{HashMap, LinkedList, VecDeque},
     io::Write,
-    iter::Peekable,
     rc::Rc,
-    str::Chars,
 };
 
-#[derive(Debug, PartialEq)]
-enum Token {
-    Ident(String),
-    Op(String),
-    LParen,
-    RParen,
-    BSlash,
-}
+mod lexer;
+mod parser;
 
-#[derive(Debug)]
-enum Ast {
-    Ident(String),
-    Lambda(String, Box<Ast>),
-    App(Box<Ast>, Box<Ast>),
-}
+use crate::lexer::*;
+use crate::parser::*;
+
+type Symbs = HashMap<String, Expr>;
 
 type Env = Rc<EnvList>;
 type EnvList = VecDeque<Expr>;
@@ -53,130 +43,6 @@ impl Expr {
                 retr + "])"
             }
         }
-    }
-}
-
-type LexerInputStream<'a> = Peekable<Chars<'a>>;
-type TokenStream<'a> = Peekable<std::slice::Iter<'a, Token>>;
-type ParseResult<T> = Result<T, String>;
-type Symbs = HashMap<String, Expr>;
-
-fn lex<'a>(input: &mut LexerInputStream) -> ParseResult<Vec<Token>> {
-    let mut retr = vec![];
-
-    while let Some(next) = input.next() {
-        match next {
-            c if c.is_whitespace() => continue,
-            '\\' => retr.push(Token::BSlash),
-            '(' => retr.push(Token::LParen),
-            ')' => retr.push(Token::RParen),
-            '[' => todo!(),
-            ']' => todo!(),
-            c if c.is_ascii_alphanumeric() || c == '_' => retr.push(lex_ident(input, c)),
-            c if c.is_ascii_graphic() => retr.push(lex_op(input, c)),
-            otherwise => return Err(format!("Unexpected character `{}`", otherwise)),
-        }
-    }
-
-    Ok(retr)
-}
-
-fn lex_ident<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
-    let mut retr = so_far.to_string();
-
-    while let Some(peeked) =
-        input.next_if(|&p| (p.is_ascii_alphanumeric() || p == '_') && !"([\\])".contains(p))
-    {
-        retr.push(peeked);
-    }
-
-    Token::Ident(retr)
-}
-
-fn lex_op<'a>(input: &mut LexerInputStream, so_far: char) -> Token {
-    let mut retr = so_far.to_string();
-
-    while let Some(peeked) = input
-        .next_if(|&p| p.is_ascii_graphic() && !p.is_ascii_alphanumeric() && !"([_\\])".contains(p))
-    {
-        retr.push(peeked);
-    }
-
-    Token::Op(retr)
-}
-
-fn parse_ast(tokens: &mut TokenStream) -> ParseResult<Ast> {
-    parse_lambda_ast(tokens)
-}
-
-fn parse_params(tokens: &mut TokenStream) -> ParseResult<Vec<String>> {
-    let mut retr = Vec::new();
-
-    loop {
-        match tokens.peek() {
-            Some(Token::Ident(id)) => {
-                if retr.contains(id) {
-                    return Err(format!("Conflicting definitions for `{}`", id));
-                }
-                retr.push(id.clone());
-            }
-            _ => break,
-        }
-        tokens.next();
-    }
-
-    Ok(retr)
-}
-
-fn parse_lambda_ast(tokens: &mut TokenStream) -> ParseResult<Ast> {
-    if let Some(_) = tokens.next_if(|&t| *t == Token::BSlash) {
-        let params = parse_params(tokens)?;
-
-        if params.len() == 0 {
-            return Err(format!(
-                "Expected at least one parameter in lambda expression"
-            ));
-        }
-
-        tokens
-            .next_if(|&t| matches!(t, Token::Op(op) if op == "->"))
-            .map_or_else(
-                || Err(format!("Expected `->` in lambda expression")),
-                |_| {
-                    Ok(params
-                        .into_iter()
-                        .rfold(parse_lambda_ast(tokens)?, |acc, p| {
-                            Ast::Lambda(p, Box::new(acc))
-                        }))
-                },
-            )
-    } else {
-        parse_app_ast(tokens)
-    }
-}
-
-fn parse_app_ast(tokens: &mut TokenStream) -> ParseResult<Ast> {
-    let mut ast = parse_atom(tokens)?;
-
-    while let Some(Token::Ident(_)) | Some(Token::LParen) = tokens.peek() {
-        ast = Ast::App(Box::new(ast), Box::new(parse_atom(tokens)?))
-    }
-
-    Ok(ast)
-}
-
-fn parse_atom(tokens: &mut TokenStream) -> ParseResult<Ast> {
-    match tokens.next() {
-        Some(Token::Ident(id)) => Ok(Ast::Ident(id.clone())),
-        Some(Token::LParen) => {
-            let retr = parse_ast(tokens);
-            tokens
-                .next_if(|&t| matches!(t, Token::RParen))
-                .map_or_else(|| Err(format!("Expected `)`")), |_| retr)
-        }
-        Some(Token::RParen) => Err(format!("Unmatched `)`")),
-        None => Err(format!("Unexpected EOF")),
-        otherwise => Err(format!("Unexpected token `{:?}`", otherwise)),
     }
 }
 
