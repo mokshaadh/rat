@@ -4,11 +4,9 @@ use std::{
     rc::Rc,
 };
 
-mod lexer;
-mod parser;
+mod parse;
 
-use crate::lexer::*;
-use crate::parser::*;
+use crate::parse::*;
 
 type Symbs = HashMap<String, Expr>;
 
@@ -74,14 +72,15 @@ fn beta_reduce(expr: &Expr, env: &Env, symbs: &Symbs) -> Expr {
             let new_fun = beta_reduce(fun, env, symbs);
             let new_arg = beta_reduce(arg, env, symbs);
 
-            if let Expr::Lambda(body, fun_env) = new_fun {
-                let mut new_env_list = (*fun_env).clone();
-                new_env_list.push_front(new_arg.clone());
-                let new_env = Env::new(new_env_list);
+            match new_fun {
+                Expr::Lambda(body, fun_env) => {
+                    let mut new_env_list = (*fun_env).clone();
+                    new_env_list.push_front(new_arg.clone());
+                    let new_env = Env::new(new_env_list);
 
-                beta_reduce(&body, &new_env, symbs)
-            } else {
-                Expr::App(Box::new(new_fun), Box::new(new_arg))
+                    beta_reduce(&body, &new_env, symbs)
+                }
+                _ => Expr::App(Box::new(new_fun), Box::new(new_arg)),
             }
         }
         Expr::Lambda(body, _) if !env.is_empty() => Expr::Lambda(body.clone(), env.clone()),
@@ -89,8 +88,8 @@ fn beta_reduce(expr: &Expr, env: &Env, symbs: &Symbs) -> Expr {
     }
 }
 
-fn str_to_expr(input: &str) -> Result<Expr, String> {
-    let mut char_stream = input.chars().peekable();
+fn str_to_expr(input: &str) -> ParseResult<Expr> {
+    let mut char_stream = input.chars().enumerate().peekable();
     let tokens = lex(&mut char_stream)?;
     let mut token_stream = tokens.iter().peekable();
     let ast = parse_ast(&mut token_stream)?;
@@ -147,7 +146,7 @@ fn main() {
         let expr = match str_to_expr(&input) {
             Ok(expr) => expr,
             Err(msg) => {
-                println!("Error: {}", msg);
+                println!("Error: {:?}", msg);
                 continue;
             }
         };
