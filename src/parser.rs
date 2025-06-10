@@ -1,62 +1,9 @@
-use std::{
-    cmp::{max, min},
-    iter::{Enumerate, Peekable},
-    slice::Iter,
-    str::Chars,
+use std::{iter::Peekable, slice::Iter};
+
+use crate::{
+    error::{Location, ParseError, ParseResult},
+    lexer::{Token, TokenKind},
 };
-
-pub type ParseResult<T> = Result<T, ParseError>;
-
-#[derive(Debug)]
-pub struct ParseError {
-    pub msg: String,
-    pub loc: Location,
-}
-
-impl ParseError {
-    pub fn new(msg: String, loc: Location) -> Self {
-        Self { msg, loc }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct Location {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl Location {
-    pub fn new(start: usize, end: usize) -> Self {
-        Self { start, end }
-    }
-
-    pub fn combine(&self, other: &Self) -> Self {
-        Self {
-            start: min(self.start, other.start),
-            end: max(self.end, other.end),
-        }
-    }
-}
-
-pub struct Token {
-    pub kind: TokenKind,
-    pub loc: Location,
-}
-
-impl Token {
-    pub fn new(kind: TokenKind, loc: Location) -> Self {
-        Self { kind, loc }
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum TokenKind {
-    Ident(String),
-    Op(String),
-    LParen,
-    RParen,
-    BSlash,
-}
 
 #[derive(Debug)]
 pub enum Ast {
@@ -64,70 +11,6 @@ pub enum Ast {
     Lambda(String, Box<Ast>),
     App(Box<Ast>, Box<Ast>),
 }
-
-// LEX
-
-pub type LexInputStream<'a> = Peekable<Enumerate<Chars<'a>>>;
-
-pub fn lex(input: &mut LexInputStream) -> ParseResult<Vec<Token>> {
-    let mut retr = vec![];
-
-    while let Some((loc, ch)) = input.next() {
-        match ch {
-            c if c.is_whitespace() => continue,
-            '\\' => retr.push(Token::new(TokenKind::BSlash, Location::new(loc, loc))),
-            '(' => retr.push(Token::new(TokenKind::LParen, Location::new(loc, loc))),
-            ')' => retr.push(Token::new(TokenKind::RParen, Location::new(loc, loc))),
-            c if c.is_ascii_alphanumeric() || c == '_' => retr.push(lex_ident(input, (loc, ch))),
-            c if c.is_ascii_graphic() => retr.push(lex_op(input, (loc, ch))),
-            otherwise => {
-                return Err(ParseError::new(
-                    format!("Unexpected character `{}`", otherwise),
-                    Location::new(loc, loc),
-                ))
-            }
-        }
-    }
-
-    Ok(retr)
-}
-
-fn lex_ident(input: &mut LexInputStream, (start, so_far): (usize, char)) -> Token {
-    lex_while(
-        input,
-        |ch| (ch.is_ascii_alphanumeric() || ch == '_') && !"([\\])".contains(ch),
-        |retr| TokenKind::Ident(retr),
-        (start, so_far),
-    )
-}
-
-fn lex_op(input: &mut LexInputStream, (start, so_far): (usize, char)) -> Token {
-    lex_while(
-        input,
-        |ch| ch.is_ascii_graphic() && !ch.is_ascii_alphanumeric() && !"([_\\])".contains(ch),
-        |retr| TokenKind::Op(retr),
-        (start, so_far),
-    )
-}
-
-fn lex_while(
-    input: &mut LexInputStream,
-    cond: impl Fn(char) -> bool,
-    tok_kind: impl Fn(String) -> TokenKind,
-    (start, so_far): (usize, char),
-) -> Token {
-    let mut retr = so_far.to_string();
-    let mut end = start;
-
-    while let Some((loc, ch)) = input.next_if(|&(_, ch)| cond(ch)) {
-        end = loc;
-        retr.push(ch);
-    }
-
-    Token::new(tok_kind(retr), Location::new(start, end))
-}
-
-// PARSE
 
 pub type TokenStream<'a> = Peekable<Iter<'a, Token>>;
 

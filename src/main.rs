@@ -4,9 +4,13 @@ use std::{
     rc::Rc,
 };
 
-mod parse;
+use error::ParseResult;
+use lexer::lex;
+use parser::{parse_ast, Ast};
 
-use crate::parse::*;
+mod error;
+mod lexer;
+mod parser;
 
 type Symbs = HashMap<String, Expr>;
 
