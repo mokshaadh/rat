@@ -26,7 +26,7 @@ fn parse_params(tokens: &mut TokenStream) -> ParseResult<Vec<String>> {
             TokenKind::Ident(ref id) => {
                 if retr.contains(id) {
                     return Err(ParseError::new(
-                        format!("Conflicting definitions for `{}`", id),
+                        format!("conflicting definitions for `{}`", id),
                         next.loc,
                     ));
                 }
@@ -47,7 +47,7 @@ fn parse_lambda(tokens: &mut TokenStream) -> ParseResult<Ast> {
 
             if params.len() == 0 {
                 return Err(ParseError::new(
-                    format!("Expected at least one parameter in lambda expression"),
+                    "expected at least one parameter in lambda expression".into(),
                     bslash.loc,
                 ));
             }
@@ -61,12 +61,12 @@ fn parse_lambda(tokens: &mut TokenStream) -> ParseResult<Ast> {
                         }))
                     }
                     _ => Err(ParseError::new(
-                        format!("Expected `->` in lambda expression"),
+                        "expected `->` in lambda expression".into(),
                         next.loc,
                     )),
                 },
                 None => Err(ParseError::new(
-                    format!("Expected `->` in lambda expression"),
+                    "expected `->` in lambda expression".into(),
                     bslash.loc,
                 )),
             }
@@ -98,17 +98,14 @@ fn parse_atom(tokens: &mut TokenStream) -> ParseResult<Ast> {
                 let retr = parse_ast(tokens)?;
                 match tokens.next() {
                     Some(next) if next.kind == TokenKind::RParen => Ok(retr),
-                    _ => Err(ParseError::new(format!("Unmatched `(`"), next.loc)),
+                    _ => Err(ParseError::new("unmatched delimiter".into(), next.loc)),
                 }
             }
-            TokenKind::RParen => Err(ParseError::new(format!("Unmatched `)`"), next.loc)),
-            ref otherwise => Err(ParseError::new(
-                format!("Unexpected token `{:?}`", otherwise),
-                next.loc,
-            )),
+            TokenKind::RParen => Err(ParseError::new("unmatched delimiter".into(), next.loc)),
+            _ => Err(ParseError::new("unexpected token".into(), next.loc)),
         },
         None => Err(ParseError::new(
-            format!("Unexpected EOF"),
+            "unexpected EOF".into(),
             Location::new(0, 0),
         )),
     }

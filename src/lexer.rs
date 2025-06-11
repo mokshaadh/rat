@@ -38,9 +38,9 @@ pub fn lex(input: &mut LexInputStream) -> ParseResult<Vec<Token>> {
             ')' => retr.push(Token::new(TokenKind::RParen, Location::new(loc, loc))),
             c if c.is_ascii_alphanumeric() || c == '_' => retr.push(lex_ident(input, (loc, ch))),
             c if c.is_ascii_graphic() => retr.push(lex_op(input, (loc, ch))),
-            otherwise => {
+            _ => {
                 return Err(ParseError::new(
-                    format!("Unexpected character `{}`", otherwise),
+                    "unexpected character".into(),
                     Location::new(loc, loc),
                 ))
             }
